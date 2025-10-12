@@ -32,7 +32,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
             match state.validate_token(auth) {
                 Ok(data) => Ok(Auth(data.id)),
                 Err(e) => {
-                    warn!("Token validation error: {e}");
+                    debug!("Token validation error: {e}");
                     Err((StatusCode::UNAUTHORIZED, "Unauthorized"))
                 }
             }
