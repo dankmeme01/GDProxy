@@ -8,8 +8,6 @@ use axum::{
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
-use hyper_tls::HttpsConnector;
-use hyper_util::rt::TokioExecutor;
 use tracing::{debug, info, warn};
 
 use crate::AppState;
@@ -62,7 +60,7 @@ pub async fn proxy_handler(
         return cached;
     }
 
-    match forward_request(&path, form).await {
+    match forward_request(&path, form, &state).await {
         Ok(resp) => {
             if should_cache {
                 state.cache_response(ckey, resp.clone()).await;
@@ -82,12 +80,12 @@ pub async fn proxy_handler(
     }
 }
 
-async fn forward_request(path: &str, form: Bytes) -> anyhow::Result<(StatusCode, String)> {
+async fn forward_request(
+    path: &str,
+    form: Bytes,
+    state: &AppState,
+) -> anyhow::Result<(StatusCode, String)> {
     let url = format!("https://www.boomlings.com/database/{}", path).parse::<hyper::Uri>()?;
-
-    let https = HttpsConnector::new();
-    let client = hyper_util::client::legacy::Client::builder(TokioExecutor::new())
-        .build::<_, Full<Bytes>>(https);
 
     let authority = url.authority().unwrap().clone();
     let req = Request::builder()
@@ -101,7 +99,7 @@ async fn forward_request(path: &str, form: Bytes) -> anyhow::Result<(StatusCode,
         .method(hyper::Method::POST)
         .body(Full::new(form))?;
 
-    let mut res = client.request(req).await?;
+    let mut res = state.http_client.request(req).await?;
     let mut body = Vec::new();
 
     while let Some(next) = res.frame().await {

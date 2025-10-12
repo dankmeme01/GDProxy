@@ -2,7 +2,13 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use axum::{Router, body::Bytes, routing::post};
 use blake3::Hasher;
+use http_body_util::Full;
 use hyper::StatusCode;
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
 use moka::future::{Cache, CacheBuilder};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -21,6 +27,7 @@ pub struct AppState {
     issuer: TokenIssuer,
     revoked: HashSet<u64>,
     cache: Option<Cache<u64, (StatusCode, String)>>,
+    pub http_client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
 }
 
 impl AppState {
@@ -36,10 +43,24 @@ impl AppState {
             None
         };
 
+        let tls = rustls::ClientConfig::builder()
+            .with_native_roots()
+            .unwrap()
+            .with_no_client_auth();
+
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        let client = Client::builder(TokioExecutor::new()).build(https);
+
         Self {
             issuer,
             revoked: config.revoked_tokens.into_iter().collect(),
             cache,
+            http_client: client,
         }
     }
 
@@ -75,13 +96,18 @@ impl AppState {
     }
 
     pub async fn cache_response(&self, key: u64, response: (StatusCode, String)) {
-        self.cache.as_ref().map(|c| c.insert(key, response));
+        if let Some(cache) = self.cache.as_ref() {
+            cache.insert(key, response).await;
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    // do one-time initialization of TLS stuff
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let config_path = std::path::Path::new("config.toml");
     let config = if config_path.exists() {
