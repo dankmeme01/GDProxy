@@ -78,7 +78,7 @@ jobs:
         shell: bash
 
       - name: Copy artifacts (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os != 'windows-latest'
         run: |
           cp target/${{ matrix.target }}/release/gd-proxy artifacts/gd-proxy${{ matrix.bin-suffix }} || :
         shell: bash
