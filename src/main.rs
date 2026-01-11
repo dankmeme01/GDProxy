@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use axum::{Router, body::Bytes, routing::post};
 use blake3::Hasher;
+use bytes::BytesMut;
 use http_body_util::Full;
 use hyper::StatusCode;
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
@@ -26,7 +27,7 @@ mod token_issuer;
 pub struct AppState {
     issuer: TokenIssuer,
     revoked: HashSet<u64>,
-    cache: Option<Cache<u64, (StatusCode, String)>>,
+    cache: Option<Cache<u64, (StatusCode, Bytes)>>,
     pub http_client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
 }
 
@@ -91,14 +92,21 @@ impl AppState {
             .unwrap()
     }
 
-    pub async fn get_cached_response(&self, key: u64) -> Option<(StatusCode, String)> {
+    pub async fn get_cached_response(&self, key: u64) -> Option<(StatusCode, Bytes)> {
         self.cache.as_ref()?.get(&key).await
     }
 
-    pub async fn cache_response(&self, key: u64, response: (StatusCode, String)) {
+    pub async fn cache_response(
+        &self,
+        key: u64,
+        response: (StatusCode, BytesMut),
+    ) -> (StatusCode, Bytes) {
+        let data = response.1.freeze();
+
         if let Some(cache) = self.cache.as_ref() {
-            cache.insert(key, response).await;
+            cache.insert(key, (response.0, data.clone())).await;
         }
+        (response.0, data)
     }
 }
 

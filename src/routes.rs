@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
     extract::{FromRequestParts, Path, RawForm, State},
     http::request::Parts,
     response::IntoResponse,
 };
+use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
 use tracing::{debug, info, warn};
@@ -47,13 +47,14 @@ pub async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     RawForm(form): RawForm,
 ) -> impl IntoResponse {
-    // path will be "blah.php" n stuff
-    info!("Forwarding request to {path} (ID {id})");
-    debug!("Body: {:?}", form);
-
-    // see if we have a cached response
+    // compute cache key and check if cachable
     let should_cache = should_cache_endpoint(&path);
     let ckey = state.compute_cache_key(&path, &form);
+
+    // path will be "blah.php" n stuff
+    info!("Forwarding request to {path} (ID {id})");
+    debug!("Cacheable: {should_cache}, key: {ckey}");
+    debug!("Body: {:?}", form);
 
     if should_cache && let Some(cached) = state.get_cached_response(ckey).await {
         debug!("Cache hit, returning cached response");
@@ -63,10 +64,10 @@ pub async fn proxy_handler(
     match forward_request(&path, form, &state).await {
         Ok(resp) => {
             if should_cache {
-                state.cache_response(ckey, resp.clone()).await;
+                state.cache_response(ckey, resp).await
+            } else {
+                (resp.0, resp.1.freeze())
             }
-
-            resp
         }
 
         Err(e) => {
@@ -74,7 +75,7 @@ pub async fn proxy_handler(
 
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error".to_owned(),
+                "internal error".to_string().into_bytes().into(),
             )
         }
     }
@@ -84,7 +85,7 @@ async fn forward_request(
     path: &str,
     form: Bytes,
     state: &AppState,
-) -> anyhow::Result<(StatusCode, String)> {
+) -> anyhow::Result<(StatusCode, BytesMut)> {
     let url = format!("https://www.boomlings.com/database/{}", path).parse::<hyper::Uri>()?;
 
     let authority = url.authority().unwrap().clone();
@@ -100,7 +101,7 @@ async fn forward_request(
         .body(Full::new(form))?;
 
     let mut res = state.http_client.request(req).await?;
-    let mut body = Vec::new();
+    let mut body = BytesMut::new();
 
     while let Some(next) = res.frame().await {
         let frame = next?;
@@ -111,7 +112,7 @@ async fn forward_request(
 
     let status = res.status();
 
-    Ok((status, String::from_utf8(body)?))
+    Ok((status, body))
 }
 
 fn should_cache_endpoint(path: &str) -> bool {
