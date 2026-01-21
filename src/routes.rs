@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{FromRequestParts, Path, RawForm, State},
+    extract::{FromRequestParts, Path, Query, RawForm, State},
     http::request::Parts,
     response::IntoResponse,
 };
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::AppState;
@@ -40,15 +41,22 @@ impl FromRequestParts<Arc<AppState>> for Auth {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RequestParams {
+    #[serde(default)]
+    pub no_cache: bool,
+}
+
 #[axum::debug_handler]
 pub async fn proxy_handler(
     Path(path): Path<String>,
     Auth(id): Auth,
     State(state): State<Arc<AppState>>,
+    Query(query): Query<RequestParams>,
     RawForm(form): RawForm,
 ) -> impl IntoResponse {
     // compute cache key and check if cachable
-    let should_cache = should_cache_endpoint(&path);
+    let should_cache = !query.no_cache && should_cache_endpoint(&path);
     let ckey = state.compute_cache_key(&path, &form);
 
     // path will be "blah.php" n stuff
