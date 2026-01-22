@@ -1,4 +1,8 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{Router, body::Bytes, routing::post};
 use blake3::Hasher;
@@ -11,23 +15,27 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use moka::future::{Cache, CacheBuilder};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
 use tracing::info;
 
 use crate::{
     config::Config,
+    rate_limiter::RateLimiter,
     token_issuer::{TokenData, TokenIssuer, TokenValidationError},
 };
 
 mod config;
+pub mod extractors;
+mod rate_limiter;
 mod routes;
 mod token_issuer;
 
-#[derive(Clone)]
 pub struct AppState {
     issuer: TokenIssuer,
     revoked: HashSet<u64>,
     cache: Option<Cache<u64, (StatusCode, Bytes)>>,
+    rate_limiters: Mutex<HashMap<u64, RateLimiter>>,
+    tokens_per_sec: u32,
     pub http_client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
 }
 
@@ -43,6 +51,8 @@ impl AppState {
         } else {
             None
         };
+
+        let rate_limiters = Mutex::new(HashMap::new());
 
         let tls = rustls::ClientConfig::builder()
             .with_native_roots()
@@ -61,6 +71,8 @@ impl AppState {
             issuer,
             revoked: config.revoked_tokens.into_iter().collect(),
             cache,
+            rate_limiters,
+            tokens_per_sec: config.max_requests_per_second,
             http_client: client,
         }
     }
@@ -107,6 +119,23 @@ impl AppState {
             cache.insert(key, (response.0, data.clone())).await;
         }
         (response.0, data)
+    }
+
+    pub async fn check_rate_limit(&self, id: u64) -> bool {
+        // TODO: in the future, periodically clean up old rate limiters
+
+        let mut map = self.rate_limiters.lock().await;
+        let entry = map.entry(id).or_insert_with(|| self.new_limiter());
+
+        entry.consume()
+    }
+
+    fn new_limiter(&self) -> RateLimiter {
+        if self.tokens_per_sec == 0 {
+            RateLimiter::new_unlimited()
+        } else {
+            RateLimiter::new(self.tokens_per_sec, self.tokens_per_sec)
+        }
     }
 }
 

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{FromRequestParts, Path, Query, RawForm, State},
-    http::request::Parts,
+    extract::{Path, Query, RawForm, State},
     response::IntoResponse,
 };
 use bytes::{Bytes, BytesMut};
@@ -11,35 +10,10 @@ use hyper::{Request, StatusCode};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use crate::AppState;
-
-#[derive(Debug)]
-pub struct Auth(pub u64);
-
-impl FromRequestParts<Arc<AppState>> for Auth {
-    type Rejection = (StatusCode, &'static str);
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &Arc<AppState>,
-    ) -> Result<Self, Self::Rejection> {
-        if let Some(auth) = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-        {
-            match state.validate_token(auth) {
-                Ok(data) => Ok(Auth(data.id)),
-                Err(e) => {
-                    debug!("Token validation error: {e}");
-                    Err((StatusCode::UNAUTHORIZED, "Unauthorized"))
-                }
-            }
-        } else {
-            Err((StatusCode::UNAUTHORIZED, "Unauthorized"))
-        }
-    }
-}
+use crate::{
+    AppState,
+    extractors::{Auth, Limit},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct RequestParams {
@@ -53,6 +27,7 @@ pub async fn proxy_handler(
     Auth(id): Auth,
     State(state): State<Arc<AppState>>,
     Query(query): Query<RequestParams>,
+    _: Limit,
     RawForm(form): RawForm,
 ) -> impl IntoResponse {
     // compute cache key and check if cachable
@@ -60,7 +35,7 @@ pub async fn proxy_handler(
     let ckey = state.compute_cache_key(&path, &form);
 
     // path will be "blah.php" n stuff
-    info!("Forwarding request to {path} (ID {id})");
+    info!("[{id}] request to {path}");
     debug!("Cacheable: {should_cache}, key: {ckey}");
     debug!("Body: {:?}", form);
 
@@ -95,6 +70,8 @@ async fn forward_request(
     state: &AppState,
 ) -> anyhow::Result<(StatusCode, BytesMut)> {
     let url = format!("https://www.boomlings.com/database/{}", path).parse::<hyper::Uri>()?;
+
+    info!("Forwarding request to {}", url);
 
     let authority = url.authority().unwrap().clone();
     let req = Request::builder()

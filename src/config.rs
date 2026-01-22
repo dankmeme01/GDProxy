@@ -16,6 +16,10 @@ fn default_cache_ttl() -> u64 {
     3600 // 1 hour
 }
 
+fn default_reqs_per_second() -> u32 {
+    10
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_secret_key")]
@@ -24,6 +28,8 @@ pub struct Config {
     pub port: u16,
     #[serde(default)]
     pub revoked_tokens: Vec<u64>,
+    #[serde(default = "default_reqs_per_second")]
+    pub max_requests_per_second: u32,
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl: u64,
 }
@@ -53,6 +59,7 @@ impl Default for Config {
             port: default_port(),
             revoked_tokens: Vec::new(),
             cache_ttl: default_cache_ttl(),
+            max_requests_per_second: default_reqs_per_second(),
         }
     }
 }
