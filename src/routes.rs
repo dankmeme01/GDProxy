@@ -6,7 +6,7 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, StatusCode};
+use hyper::{HeaderMap, Request, StatusCode};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
@@ -27,11 +27,14 @@ pub async fn proxy_handler(
     Auth(id): Auth,
     State(state): State<Arc<AppState>>,
     Query(query): Query<RequestParams>,
+    headers: HeaderMap,
     _: Limit,
     RawForm(form): RawForm,
 ) -> impl IntoResponse {
+    let force_no_cache = headers.get("X-No-Cache").is_some_and(|v| v == "1");
+
     // compute cache key and check if cachable
-    let should_cache = !query.no_cache && should_cache_endpoint(&path);
+    let should_cache = !force_no_cache && !query.no_cache && should_cache_endpoint(&path);
     let ckey = state.compute_cache_key(&path, &form);
 
     // path will be "blah.php" n stuff
