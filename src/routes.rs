@@ -4,6 +4,7 @@ use axum::{
     extract::{Path, Query, RawForm, State},
     response::IntoResponse,
 };
+use axum_client_ip::ClientIp;
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use hyper::{HeaderMap, Request, StatusCode};
@@ -22,11 +23,13 @@ pub struct RequestParams {
 }
 
 #[axum::debug_handler]
+#[allow(clippy::too_many_arguments)]
 pub async fn proxy_handler(
     Path(path): Path<String>,
     Auth(id): Auth,
     State(state): State<Arc<AppState>>,
     Query(query): Query<RequestParams>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     _: Limit,
     RawForm(form): RawForm,
@@ -38,12 +41,12 @@ pub async fn proxy_handler(
     let ckey = state.compute_cache_key(&path, &form);
 
     // path will be "blah.php" n stuff
-    info!("[{id}] request to {path}");
+    info!(%path, %id, %ip, "proxying request");
     debug!("Cacheable: {should_cache}, key: {ckey}");
     debug!("Body: {:?}", form);
 
     if should_cache && let Some(cached) = state.get_cached_response(ckey).await {
-        debug!("Cache hit, returning cached response");
+        debug!("cache hit, returning cached response");
         return cached;
     }
 
@@ -74,7 +77,7 @@ async fn forward_request(
 ) -> anyhow::Result<(StatusCode, BytesMut)> {
     let url = format!("https://www.boomlings.com/database/{}", path).parse::<hyper::Uri>()?;
 
-    info!("Forwarding request to {}", url);
+    info!(?url, body_len = form.len(), "forwarding request");
 
     let authority = url.authority().unwrap().clone();
     let req = Request::builder()

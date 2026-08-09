@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
 
 use axum::{Router, body::Bytes, routing::post};
+use axum_client_ip::ClientIpSource;
 use blake3::Hasher;
 use bytes::BytesMut;
 use http_body_util::Full;
@@ -17,6 +19,11 @@ use hyper_util::{
 use moka::future::{Cache, CacheBuilder};
 use tokio::{net::TcpListener, sync::Mutex};
 use tracing::info;
+use tracing_appender::{
+    non_blocking::NonBlockingBuilder,
+    rolling::{RollingFileAppender, Rotation},
+};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     config::Config,
@@ -141,7 +148,41 @@ impl AppState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // setup logging..
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_target(true)
+        .with_filter(filter);
+
+    let json_logs = std::env::var("GD_PROXY_JSON_LOGS").is_ok_and(|x| x == "1");
+    let (json_layer, _guard) = if json_logs {
+        let appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("gd-proxy.json.log")
+            .max_log_files(7)
+            .build("./logs")
+            .expect("failed to build file appender");
+        let (nb, guard) = NonBlockingBuilder::default()
+            .thread_name("Log writer thread")
+            .buffered_lines_limit(1024)
+            .finish(appender);
+
+        let layer = tracing_subscriber::fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_writer(nb)
+            .with_filter(EnvFilter::new("debug"));
+
+        (Some(layer), Some(guard))
+    } else {
+        (None, None)
+    };
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(json_layer)
+        .init();
 
     // do one-time initialization of TLS stuff
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -157,6 +198,7 @@ async fn main() {
         config
     };
     let c_port = config.port;
+    let c_behind_proxy = config.behind_proxy;
 
     let state = Arc::new(AppState::new(config));
 
@@ -201,9 +243,23 @@ async fn main() {
         .await
         .unwrap();
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/database/{*key}", post(routes::proxy_handler))
         .with_state(state);
 
-    axum::serve(listener, app).await.unwrap();
+    app = app.layer(
+        if c_behind_proxy {
+            ClientIpSource::RightmostXForwardedFor
+        } else {
+            ClientIpSource::ConnectInfo
+        }
+        .into_extension(),
+    );
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

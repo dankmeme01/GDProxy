@@ -32,6 +32,8 @@ pub struct Config {
     pub max_requests_per_second: u32,
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl: u64,
+    #[serde(default)]
+    pub behind_proxy: bool,
 }
 
 impl Config {
@@ -60,6 +62,7 @@ impl Default for Config {
             revoked_tokens: Vec::new(),
             cache_ttl: default_cache_ttl(),
             max_requests_per_second: default_reqs_per_second(),
+            behind_proxy: false,
         }
     }
 }
